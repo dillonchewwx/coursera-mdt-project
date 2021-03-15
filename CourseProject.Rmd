@@ -1,0 +1,82 @@
+---
+title: "Course Project - Modeling Data in the Tidyverse"
+author: "dillonchewwx"
+date: "15/03/2021"
+output:
+    prettydoc::html_pretty:
+        theme: tactile
+        highlight: github
+---
+
+# Overview
+
+In this project, the consumer complains data from the [Consumer Complaint Database](https://www.consumerfinance.gov/data-research/consumer-complaints/) (CFPB) would be used. The CFPB is an independent agency of the United States government that promotes transparency and protects consumers by providing information needed to make decisions when choosing financial institutions including banking institutions, lenders, mortgage services, credit unions, securities firms, foreclosure services, and debt collectors. One of the purposes of the agency is to receive and process complaints and questions about consumer financial products and services. 
+
+When a complaint is submitted by a consumer, the CFPB has to determine which category the complaint falls in (e.g. "Mortgage", "Student loan", etc). In this project, the goal would be to build a classification algorithm to classify consumer complaints into one of four categories: "Credit card or prepaid card", "Mortgage", "Student loan", or "Vehicle loan or lease".
+
+The datasets can be downloaded from the following links:
+
+* [Training Data](https://d3c33hcgiwev3.cloudfront.net/JhHJz2SSRCqRyc9kkgQqxA_8d34147955154de4a6176086946d07b3_data_complaints_train.csv?Expires=1615939200&Signature=gOhyZos3R0Iyd~INVdwxNohGqi1uQsqdwJpjJdX11qeGOk~uM~YxC9YmhDjnkad1ykcujc2QtpJr-90NUKNix~tqX4~4c-FhuPRnWkktqumLNSMxDRaoqAD7cNQWm01IbOUPWuVKrzFI-EJGiUTqIeNO-2C5IFx4R7eYb011oJU_&Key-Pair-Id=APKAJLTNE6QMUY6HBC5A)
+* [Testing Data](https://d3c33hcgiwev3.cloudfront.net/aEBWUxehSGyAVlMXoThsoQ_edf53641edca416fa00a78d9e4b16ced_data_complaints_test.csv?Expires=1615939200&Signature=AVVoqIcMXOMYB2~VngrnderA2i4TKMhIC7BIrWRoXQWhmWSAjwFrlvxwczLhXKqBLsWDoh52elxjr-cNydTKY7w1BeB7dOjKGcPuVxqkmVJ-lrqaKeSyWM0ctjeHFw3WYomXYhqSVBz91QQp4-IsmnH08Z1rKB4xMVvWXyi9tK0_&Key-Pair-Id=APKAJLTNE6QMUY6HBC5A) 
+
+# Data Import
+```{r Data Import}
+library(tidyverse)
+library(tm) # for text manipulation
+df<-read_csv("../data_complaints_train.csv")
+```
+## Data Inspection
+```{r Data Inspection}
+glimpse(df)
+```
+A quick look of the data reveals the following:
+
+* The outcome variable which we are interested in is called `Product`.
+* Although there are 5 variables which can be used as predictors, the `Consumer complaint narrative` variable seems to provide the most relevant information for making predictions on the product category. 
+
+Thus, we shall only select the above two variables for further processing. 
+```{r Extract Relevant Data}
+# Rename the complaint column and only select the two variables
+df<-df %>%
+    rename(Complain=`Consumer complaint narrative`) %>%
+    select(Product, Complain)
+```
+# Data Pre-processing.
+Let's take a closer look at each of the variables.
+```{r Check Variables}
+# Check the first few rows of Product
+head(df$Product)
+# Check if there are any categories
+unique(df$Product)
+# Check the first few rows of Complain
+head(df$Complain)
+```
+It appears that `Product` only has 4 categories. We can make it into a factor. However for `Complain`, it is a narrative which is much more complicated and thus we have to clean it up. We will carry out the following clean-up process:
+
+1. Drop any rows with `NA` in the column.
+2. Remove any strings such as "XX", "XXX" and "XXXX" which were used to mask the dates. 
+3. Convert all letters to lower case.
+4. Remove any numbers.
+5. Remove all punctuation.
+6. Remove escape characters and white spaces: `\t` and `\n`.
+7. Remove stop words e.g. "I", "My", "which", "won't" etc..
+```{r Complain Cleanup}
+df_clean<-df %>%
+    filter(Complain!=is.na(.)) %>%
+    mutate(Complain=gsub("[XX]+", "", Complain)) %>%
+    mutate(Complain=str_to_lower(Complain)) %>%
+    mutate(Complain=gsub("[0-9]", "", Complain)) %>%
+    mutate(Complain=removePunctuation(Complain)) %>%
+    mutate(Complain=gsub("\n", "", Complain)) %>%
+    mutate(Complain=gsub("\t", "", Complain)) %>%
+    mutate(Complain=stripWhitespace(Complain))
+complains<-Corpus(VectorSource(df$Complain)) %>%
+    tm_map(removeWords, stopwords())
+```
+We will now create a document term matrix using the `tm` package where each complaint will be a "document" occupying a row, each "term" will be a column name, and the counts of each term per document will be the values.
+```{r Create DTM}
+dtm<-DocumentTermMatrix(complains)
+inspect(dtm)
+```
+
+## interesting... do some exploatory analysis before ML.
