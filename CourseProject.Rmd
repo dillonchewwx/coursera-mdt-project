@@ -44,17 +44,16 @@ df<-df %>%
 # Data Pre-processing.
 Let's take a closer look at each of the variables.
 ```{r Check Variables}
-# Check the first few rows of Product
-head(df$Product)
 # Check if there are any categories
 unique(df$Product)
 # Check the first few rows of Complain
 head(df$Complain)
 ```
-It appears that `Product` only has 4 categories. We can make it into a factor. However for `Complain`, it is a narrative which is much more complicated and thus we have to clean it up. We will carry out the following clean-up process:
+
+It appears that `Product` only has 4 categories. We can make it into a factor. However for `Complain`, it is a long narrative which is much more complicated and thus we have to clean it up. We will carry out the following clean-up process:
 
 1. Drop any rows with `NA` in the column.
-2. Remove any strings such as "XX", "XXX" and "XXXX" which were used to mask the dates. 
+2. Remove any strings such as "XX", "XXX" and "XXXX" which were used to mask private information and dates.
 3. Convert all letters to lower case.
 4. Remove any numbers.
 5. Remove all punctuation.
@@ -70,7 +69,7 @@ df_clean<-df %>%
     mutate(Complain=gsub("\n", "", Complain)) %>%
     mutate(Complain=gsub("\t", "", Complain)) %>%
     mutate(Complain=stripWhitespace(Complain))
-complains<-Corpus(VectorSource(df$Complain)) %>%
+complains<-Corpus(VectorSource(df_clean$Complain)) %>%
     tm_map(removeWords, stopwords())
 ```
 We will now create a document term matrix using the `tm` package where each complaint will be a "document" occupying a row, each "term" will be a column name, and the counts of each term per document will be the values.
@@ -78,5 +77,66 @@ We will now create a document term matrix using the `tm` package where each comp
 dtm<-DocumentTermMatrix(complains)
 inspect(dtm)
 ```
+We note that there are 90975 documents and 81653 terms - that's huge! We shall try to reduce our data set by keeping only the relevant terms.  
+```{r Keep Frequent Terms}
+# Find terms which appear 1000 times or more
+freqTerms<-findFreqTerms(dtm, lowfreq=1000)
+# Limit DTM to only contain terms that appear 1000 times or more.
+dtm<-DocumentTermMatrix(complains, list(dictionary=freqTerms))
+inspect(dtm)
+```
+We have reduced the number of terms, but the sparsity has dropped marginally to 96%. Let's further simplify by removing sparse terms which have at least 90% of sparse elements (i.e, terms only occuring 0 times in a document) which can help to reduce the matrix without losing significant relations inherent to the matrix. 
+```{r Remove Sparse Terms}
+dtm<-removeSparseTerms(dtm, 0.9)
+inspect(dtm)
+```
+We have reduced the number of terms to 134, and the sparsity is now 82%. Following which, lets now carry out some simple exploratory analysis on the dataset. We can start by finding out the top 100 terms. 
+```{r Exploratory Analysis - Top 100 terms}
+# Convert to Matrix for further processing
+dtm_mat<-as.matrix(dtm)
 
-## interesting... do some exploatory analysis before ML.
+# Get the total number of counts for each term and show the top 100 terms
+sumTerm<-colSums(dtm_mat) %>%
+    .[order(-.)]
+head(sumTerm, 100)
+```
+It appears that there are several other frequent words in the top 100 which may not add value to the data set e.g. "told", "called", "back", "get", "will" etc. Let's remove them to make the data cleaner.
+```{r Remove extra stop words}
+extraStopWords<-c("told", "called", "back", "get", "will", "never", "said", "can", "call", "now", "also",
+                  "even", "just", "like", "please", "take", "want", "got")
+complains<-tm_map(complains, removeWords, extraStopWords)
+
+# Create a new DTM with all previous filters.
+dtm<-DocumentTermMatrix(complains, list(dictionary=freqTerms))
+inspect(dtm)
+dtm<-removeSparseTerms(dtm, 0.85)
+inspect(dtm)
+```
+We have reduced the number of terms to 52 and thus we can use `randomForest` for prediction later where it cannot have more than 53 levels. To carry on with the exploratory analysis, we can perform k-means clustering as we know that there are 4 different product types. 
+```{r Exploratory Analysis - Clustering}
+# Get Product ID
+product<-as.factor(df$Product)
+dtm_mat<-as.matrix(dtm)
+
+# Calculate K-means Clustering
+set.seed(123)
+kClust<-kmeans(dtm_mat, centers=4, nstart=4)
+table(kClust$cluster, product)
+```
+From the clustering with 4 different centers, it appears that the 4 clusters are not distinctive, with the exception of cluster 4 which seems predominantly for `Credit card or prepaid card`. Let's also calculate the Pearson correlation coefficients between all the terms using the `cor()` function and plot with the `corrplot` package. 
+```{r Correlation, fig.height=10, fig.width=10}
+corr<-cor(dtm_mat)
+
+library(corrplot)
+corrplot(corr, tl.cex=0.7, method="circle", type="upper", order="hclust", tl.srt=90)
+```
+From the diagram, we can see that some terms are moderately correlated with each other such as "credit" and "card" (~0.47) or "received" and "letter" (~0.43). Let's proceed with building a ML model to predict the product category.
+
+# Create Train and Test Sets
+We have briefly processed the training data set as
+
+Random Forest
+Here, we are going to predict the outcome variable using Random Forest (from `randomForest` package), a decision tree method. 
+```{r Random Forest - Recipe}
+library(tidymodels)
+```
