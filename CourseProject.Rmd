@@ -21,8 +21,11 @@ The datasets can be downloaded from the following links:
 
 # Data Import
 ```{r Data Import}
-library(tidyverse)
+library(tidyverse) # for data frame manipulation
+library(tidymodels) # for ML 
 library(tm) # for text manipulation
+
+doParallel::registerDoParallel(cores=3)
 df<-read_csv("../data_complaints_train.csv")
 ```
 ## Data Inspection
@@ -41,7 +44,7 @@ df<-df %>%
     rename(Complain=`Consumer complaint narrative`) %>%
     select(Product, Complain)
 ```
-# Data Pre-processing.
+# Data Pre-processing
 Let's take a closer look at each of the variables.
 ```{r Check Variables}
 # Check if there are any categories
@@ -100,7 +103,7 @@ sumTerm<-colSums(dtm_mat) %>%
     .[order(-.)]
 head(sumTerm, 100)
 ```
-It appears that there are several other frequent words in the top 100 which may not add value to the data set e.g. "told", "called", "back", "get", "will" etc. Let's remove them to make the data cleaner.
+It appears that there are several other frequent words in the top 100 which may not add value to the data set e.g. "told", "called", "back", "get", "will" etc. Let's remove them to make the data cleaner. In addition, we shall also remove the sparse terms which have at least 95% of sparse (i.e. terms occuring 0 times in the document) elements.
 ```{r Remove extra stop words}
 extraStopWords<-c("told", "called", "back", "get", "will", "never", "said", "can", "call", "now", "also",
                   "even", "just", "like", "please", "take", "want", "got")
@@ -109,10 +112,10 @@ complains<-tm_map(complains, removeWords, extraStopWords)
 # Create a new DTM with all previous filters.
 dtm<-DocumentTermMatrix(complains, list(dictionary=freqTerms))
 inspect(dtm)
-dtm<-removeSparseTerms(dtm, 0.85)
+dtm<-removeSparseTerms(dtm, 0.95)
 inspect(dtm)
 ```
-We have reduced the number of terms to 52 and thus we can use `randomForest` for prediction later where it cannot have more than 53 levels. To carry on with the exploratory analysis, we can perform k-means clustering as we know that there are 4 different product types. 
+We have reduced the number of terms to 323. To carry on with the exploratory analysis, we can perform k-means clustering as we know that there are 4 different product types. 
 ```{r Exploratory Analysis - Clustering}
 # Get Product ID
 product<-as.factor(df$Product)
@@ -123,7 +126,7 @@ set.seed(123)
 kClust<-kmeans(dtm_mat, centers=4, nstart=4)
 table(kClust$cluster, product)
 ```
-From the clustering with 4 different centers, it appears that the 4 clusters are not distinctive, with the exception of cluster 4 which seems predominantly for `Credit card or prepaid card`. Let's also calculate the Pearson correlation coefficients between all the terms using the `cor()` function and plot with the `corrplot` package. 
+From the clustering with 4 different centers, it appears that the 4 clusters are not distinctive, with the exception of cluster 3 which seems predominantly for `Credit card or prepaid card` - ML methods should perform better. Let's also calculate the Pearson correlation coefficients between all the terms using the `cor()` function and plot with the `corrplot` package. 
 ```{r Correlation, fig.height=10, fig.width=10}
 corr<-cor(dtm_mat)
 
@@ -132,11 +135,189 @@ corrplot(corr, tl.cex=0.7, method="circle", type="upper", order="hclust", tl.srt
 ```
 From the diagram, we can see that some terms are moderately correlated with each other such as "credit" and "card" (~0.47) or "received" and "letter" (~0.43). Let's proceed with building a ML model to predict the product category.
 
-# Create Train and Test Sets
-We have briefly processed the training data set as
+# Building a ML model for predicting product category
 
-Random Forest
-Here, we are going to predict the outcome variable using Random Forest (from `randomForest` package), a decision tree method. 
-```{r Random Forest - Recipe}
-library(tidymodels)
+## Create Train and Test Sets
+As we have briefly processed the "train" data set as dtm previously, we would now need to split it into training (75%) and test (25%) sets. Let's start by creating the training data set. 
+```{r Create Train Data Set}
+# Convert Product to a factor 
+df_clean<-df_clean %>%
+    mutate(Product=factor(Product))
+
+# Convert dtm_mat into a data frame and add the outcome Product column.
+dtm_train<-dtm_mat %>%
+    as.data.frame() %>% 
+    bind_cols(Product=df_clean$Product) %>% 
+    select(Product, everything())
+
+# Create the training data set
+set.seed(1234)
+split_dtm<-initial_split(dtm_train, strata=Product, prop=3/4)
+training_dtm<-training(split_dtm)
+head(training_dtm)
+count(training_dtm, Product)
+```
+We shall do the same for the testing data set.
+```{r Create Test Data Set}
+testing_dtm<-testing(split_dtm)
+head(testing_dtm)
+count(testing_dtm, Product)
+```
+## Create cross validation folds.
+Before moving on, we can also create cross validation folds with `rsample`. We will carry out a 4-fold cross-validation.
+```{r Cross-Validation}
+vfold_dtm<-vfold_cv(data=training_dtm, v=4)
+vfold_dtm
+pull(vfold_dtm, splits)
+
+first_fold<-vfold_dtm$splits[[1]]
+# Training set of this fold
+head(as.data.frame(first_fold, data="analysis")) 
+# Test set of this fold
+head(as.data.frame(first_fold, data="assessment")) 
+```
+## Creating ML workflow
+We can now create a recipe, model, and workflow for the ML model. We will use a classification decision tree model as our variable is categorical and the rpart engine. 
+```{r Recipe, Model , Workflow}
+# Create a recipe
+dtm_recipe<-training_dtm %>%
+    recipe(Product~.)
+
+# Create a model
+dtm_model<-decision_tree() %>%
+    set_mode("classification") %>%
+    set_engine("rpart")
+dtm_model
+
+# Create a workflow
+dtm_workflow<-workflow() %>%
+    add_recipe(dtm_recipe) %>%
+    add_model(dtm_model) 
+dtm_workflow
+```
+## Fit and assess model performance
+Now that the setup is done, we shall attempt to fit the workflow.
+```{r Fitting}
+# Fit without cross validation
+dtm_fit<-fit(dtm_workflow, data=training_dtm)
+dtm_workflow_fit<-dtm_fit %>%
+    pull_workflow_fit()
+dtm_workflow_fit
+
+dtm_workflow_fit$fit$variable.importance
+```
+Here, we can see that `mortgage` was the most important word for predicting Product. Following this, we can perform some predictions.
+```{r Predictions}
+predict_Product<-predict(dtm_workflow_fit, new_data=training_dtm)
+accuracy(training_dtm, truth=Product, estimate=predict_Product$.pred_class)
+
+# Breakdown of Product 
+count(training_dtm, Product)
+# Breakdown of Predicted Product
+count(predict_Product, .pred_class)
+# Show which rows were predicted correctly
+predicted_and_truth<-bind_cols(training_dtm, predicted_Product=pull(predict_Product, .pred_class)) %>%
+    select(predicted_Product, everything())
+head(predicted_and_truth)
+```
+The accuracy is about 84.1%. Seems pretty alright on the first go. We also note that extra "Credit card or prepaid card" and "Mortgage" was predicted, while "Student loan" and "Vehicle loan or lease" was under predicted. Additionally, we can also see exactly which rows resulted in incorrect predictions. 
+
+Lets now try to fit the model to our cross validation folds.
+```{r vfold Fit}
+set.seed(122)
+resample_fit<-fit_resamples(dtm_workflow, vfold_dtm)
+collect_metrics(resample_fit)
+```
+Interestingly, the model accuracy stays the same. 
+
+## Tuning the model
+Now, lets try to improve the model by tuning a hyperparameter. 
+```{r Tuning}
+set.seed(122)
+# Create tuned model
+dtm_model_tune<-decision_tree(min_n=tune()) %>%
+    set_mode("classification") %>%
+    set_engine("rpart")
+dtm_model_tune
+
+# Create workflow
+dtm_workflow_tune<-workflow() %>%
+    add_recipe(dtm_recipe) %>%
+    add_model(dtm_model_tune)
+
+# Fit
+model_resample_fit<-tune_grid(dtm_workflow_tune, resamples=vfold_dtm, grid=4)
+
+# Assess Performance
+collect_metrics(model_resample_fit)
+show_best(model_resample_fit, metric="accuracy")
+```
+Seems like tuning doesn't make any difference to the model - the highest accuracy achieved is 84.1%. We can stop the model building here and just update `dtm_workflow_tune` with the values chosen by `select_best()`.
+```{r Update final model}
+# Specify min_n value
+tuned_values<-select_best(model_resample_fit,"accuracy")
+# Finalize model/workflow
+dtm_workflow_tuned<-dtm_workflow_tune %>%
+    finalize_workflow(tuned_values)
+```
+
+# Final Model Performance Evaluation
+We shall first fit the final model on the full training set and also on the testing data using the `last_fit()` function. 
+```{r Evaluation}
+# Fit final model on the full training set
+overall_fit<-last_fit(dtm_workflow_tuned, split_dtm)
+collect_metrics(overall_fit)
+```
+The accuracy has increased slightly to 84.4%.
+
+Let's take a look at the predicted values for the test set. 
+```{r Predict Test Set}
+test_predictions<-collect_predictions(overall_fit)
+head(test_predictions)
+```
+
+We can do a plot to better visualize the predictions.
+```{r Prediction Plot}
+ggplot(test_predictions, aes(x=Product, fill=.pred_class)) +
+    geom_bar(position="fill", color="black") + 
+    scale_fill_brewer(palette="Set3") + 
+    labs(x="Actual Outcome Values", 
+         y="Proportion", 
+         fill="Predicted Outcome") + 
+    theme_bw() + 
+    theme(axis.text.x=element_text(angle=45, hjust=1, vjust=1))
+```
+
+It appears that our model does relatively well on all outcomes except for "Vehicle loan or lease". 
+
+# Predicting outcomes for the the provided test data
+Let's start by loading the data and doing some pre-processing.
+```{r Prediction - Preprocessing}
+# Load and clean up the data
+df_test<-read_csv("../data_complaints_test.csv") %>%
+    rename(Complain=`Consumer complaint narrative`) %>%
+    select(Complain) %>%
+    mutate(Complain=gsub("[XX]+", "", Complain)) %>%
+    mutate(Complain=str_to_lower(Complain)) %>%
+    mutate(Complain=gsub("[0-9]", "", Complain)) %>%
+    mutate(Complain=removePunctuation(Complain)) %>%
+    mutate(Complain=gsub("\n", "", Complain)) %>%
+    mutate(Complain=gsub("\t", "", Complain)) %>%
+    mutate(Complain=stripWhitespace(Complain))
+
+# Make corpus
+test_complains<-Corpus(VectorSource(df_test$Complain)) %>%
+    tm_map(removeWords, stopwords())
+
+# Make DTM
+dtm_test<-DocumentTermMatrix(test_complains, list(dictionary=freqTerms))
+dtm_test_mat<-dtm_test %>%
+    as.matrix() %>%
+    as.data.frame()
+head(dtm_test_mat)
+```
+Now its time to make predictions!
+```{r Prediction Time}
+final_model<-fit(dtm_workflow_tuned, dtm_train)
+predict(final_model, new_data=dtm_test_mat)
 ```
