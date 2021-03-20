@@ -14,10 +14,10 @@ In this project, the consumer complains data from the [Consumer Complaint Databa
 
 When a complaint is submitted by a consumer, the CFPB has to determine which category the complaint falls in (e.g. "Mortgage", "Student loan", etc). In this project, the goal would be to build a classification algorithm to classify consumer complaints into one of four categories: "Credit card or prepaid card", "Mortgage", "Student loan", or "Vehicle loan or lease".
 
-The datasets can be downloaded from the following links:
+The datasets can be downloaded from the course website:
 
-* [Training Data](https://d3c33hcgiwev3.cloudfront.net/JhHJz2SSRCqRyc9kkgQqxA_8d34147955154de4a6176086946d07b3_data_complaints_train.csv?Expires=1615939200&Signature=gOhyZos3R0Iyd~INVdwxNohGqi1uQsqdwJpjJdX11qeGOk~uM~YxC9YmhDjnkad1ykcujc2QtpJr-90NUKNix~tqX4~4c-FhuPRnWkktqumLNSMxDRaoqAD7cNQWm01IbOUPWuVKrzFI-EJGiUTqIeNO-2C5IFx4R7eYb011oJU_&Key-Pair-Id=APKAJLTNE6QMUY6HBC5A)
-* [Testing Data](https://d3c33hcgiwev3.cloudfront.net/aEBWUxehSGyAVlMXoThsoQ_edf53641edca416fa00a78d9e4b16ced_data_complaints_test.csv?Expires=1615939200&Signature=AVVoqIcMXOMYB2~VngrnderA2i4TKMhIC7BIrWRoXQWhmWSAjwFrlvxwczLhXKqBLsWDoh52elxjr-cNydTKY7w1BeB7dOjKGcPuVxqkmVJ-lrqaKeSyWM0ctjeHFw3WYomXYhqSVBz91QQp4-IsmnH08Z1rKB4xMVvWXyi9tK0_&Key-Pair-Id=APKAJLTNE6QMUY6HBC5A) 
+* [Training Data](https://www.coursera.org/learn/tidyverse-modelling-data/home/welcome)
+* [Testing Data](https://www.coursera.org/learn/tidyverse-modelling-data/home/welcome)
 
 # Data Import
 ```{r Data Import}
@@ -87,7 +87,7 @@ freqTerms<-findFreqTerms(dtm, lowfreq=1000)
 dtm<-DocumentTermMatrix(complains, list(dictionary=freqTerms))
 inspect(dtm)
 ```
-We have reduced the number of terms to 1552, but the sparsity has dropped marginally to 96%. Let's further simplify by removing sparse terms which have at least 95% of sparse elements (i.e, terms only occuring 0 times in a document) which can help to reduce the matrix without losing significant relations inherent to the matrix. 
+We have reduced the number of terms to 1552, but the sparsity has dropped marginally to 96%. Let's further simplify by removing sparse terms which have at least 95% of sparse elements (i.e, terms only occurring 0 times in a document) which can help to reduce the matrix without losing significant relations inherent to the matrix. 
 ```{r Remove Sparse Terms}
 dtm<-removeSparseTerms(dtm, 0.95)
 inspect(dtm)
@@ -129,6 +129,7 @@ df_clean<-df_clean %>%
     mutate(Product=factor(Product))
 
 # Convert dtm_mat into a data frame and add the outcome Product column.
+dtm_mat<-as.matrix(dtm)
 dtm_train<-dtm_mat %>%
     as.matrix() %>%
     as.data.frame() %>% 
@@ -192,7 +193,7 @@ dtm_workflow_fit
 
 dtm_workflow_fit$fit$variable.importance
 ```
-Here, we can see that `mortgage` was the most important word for predicting Product. Following this, we can perform some predictions.
+Here, we can see that `mortgage`, `card` and `loan` were the most important words for predicting Product. Following this, we can perform some predictions.
 ```{r Predictions}
 predict_Product<-predict(dtm_workflow_fit, new_data=training_dtm)
 accuracy(training_dtm, truth=Product, estimate=predict_Product$.pred_class)
@@ -231,6 +232,9 @@ dtm_workflow_tune<-workflow() %>%
     add_recipe(dtm_recipe) %>%
     add_model(dtm_model_tune)
 
+# Use multiple cores for faster run time.
+doParallel::registerDoParallel(cores=0.75*parallel::detectCores())
+
 # Perform tuning
 set.seed(123)
 model_resample_fit<-tune_grid(dtm_workflow_tune, 
@@ -241,7 +245,7 @@ model_resample_fit<-tune_grid(dtm_workflow_tune,
 # Assess Performance
 show_best(model_resample_fit, metric="accuracy")
 ```
-Seems like tuning doesn't make any difference to the model - the highest accuracy achieved is 84.1%. We can stop the model building here and just update `dtm_workflow_tune` with the values chosen by `select_best()`.
+The highest accuracy achieved has gone up to 88.1%. Let's stop the model building here and just update `dtm_workflow_tune` with the values chosen by `select_best()`.
 ```{r Update final model}
 # Specify min_n value
 tuned_values<-select_best(model_resample_fit,"accuracy")
@@ -251,13 +255,13 @@ dtm_workflow_tuned<-dtm_workflow_tune %>%
 ```
 
 # Final Model Performance Evaluation
-We shall first fit the final model on the full training set and also on the testing data using the `last_fit()` function. 
+We shall fit the final model on the full training set using the `last_fit()` function. 
 ```{r Evaluation}
 # Fit final model on the full training set
 overall_fit<-last_fit(dtm_workflow_tuned, split_dtm)
 collect_metrics(overall_fit)
 ```
-The accuracy has increased slightly to 84.4%.
+The accuracy is approximately 88.1%.
 
 Let's take a look at the predicted values for the test set. 
 ```{r Predict Test Set}
