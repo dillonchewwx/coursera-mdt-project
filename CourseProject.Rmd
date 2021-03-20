@@ -25,7 +25,6 @@ library(tidyverse) # for data frame manipulation
 library(tidymodels) # for ML 
 library(tm) # for text manipulation
 
-doParallel::registerDoParallel(cores=3)
 df<-read_csv("../data_complaints_train.csv")
 ```
 ## Data Inspection
@@ -80,7 +79,7 @@ We will now create a document term matrix using the `tm` package where each comp
 dtm<-DocumentTermMatrix(complains)
 inspect(dtm)
 ```
-We note that there are 90975 documents and 81653 terms - that's huge! We shall try to reduce our data set by keeping only the relevant terms.  
+We note that there are 90975 documents and 81653 terms - that's huge! We shall try to reduce our data set initially by keeping only the relevant terms for exploratory analysis. Here, we define relevant terms as terms which appear 1000 times or more.
 ```{r Keep Frequent Terms}
 # Find terms which appear 1000 times or more
 freqTerms<-findFreqTerms(dtm, lowfreq=1000)
@@ -88,64 +87,50 @@ freqTerms<-findFreqTerms(dtm, lowfreq=1000)
 dtm<-DocumentTermMatrix(complains, list(dictionary=freqTerms))
 inspect(dtm)
 ```
-We have reduced the number of terms, but the sparsity has dropped marginally to 96%. Let's further simplify by removing sparse terms which have at least 90% of sparse elements (i.e, terms only occuring 0 times in a document) which can help to reduce the matrix without losing significant relations inherent to the matrix. 
+We have reduced the number of terms to 1552, but the sparsity has dropped marginally to 96%. Let's further simplify by removing sparse terms which have at least 95% of sparse elements (i.e, terms only occuring 0 times in a document) which can help to reduce the matrix without losing significant relations inherent to the matrix. 
 ```{r Remove Sparse Terms}
-dtm<-removeSparseTerms(dtm, 0.9)
+dtm<-removeSparseTerms(dtm, 0.95)
 inspect(dtm)
 ```
-We have reduced the number of terms to 134, and the sparsity is now 82%. Following which, lets now carry out some simple exploratory analysis on the dataset. We can start by finding out the top 100 terms. 
-```{r Exploratory Analysis - Top 100 terms}
+We have reduced the number of terms to 341, and the sparsity is now 89%. Following which, lets now carry out some simple exploratory analysis on the dataset. We can start by finding out the top 150 terms. 
+```{r Exploratory Analysis - Top 150 terms}
 # Convert to Matrix for further processing
 dtm_mat<-as.matrix(dtm)
 
-# Get the total number of counts for each term and show the top 100 terms
+# Get the total number of counts for each term and show the top 150 terms
 sumTerm<-colSums(dtm_mat) %>%
     .[order(-.)]
-head(sumTerm, 100)
+head(sumTerm, 150)
 ```
-It appears that there are several other frequent words in the top 100 which may not add value to the data set e.g. "told", "called", "back", "get", "will" etc. Let's remove them to make the data cleaner. In addition, we shall also remove the sparse terms which have at least 95% of sparse (i.e. terms occuring 0 times in the document) elements.
+It appears that there are several other frequent words in the top 150 which may not add value to the data set e.g. "told", "called", "back", "get", "will" etc. Let's remove them to make the data cleaner. 
 ```{r Remove extra stop words}
 extraStopWords<-c("told", "called", "back", "get", "will", "never", "said", "can", "call", "now", "also",
-                  "even", "just", "like", "please", "take", "want", "got")
+                  "even", "just", "like", "please", "take", "want", "going", "without", "got", "however", 
+                  "went", "able", "didnt", "dont", "put", "later", "way", "done", "needed", "today", "used", "took")
 complains<-tm_map(complains, removeWords, extraStopWords)
-
+```
+Now, we shall recreate the DTM, but with all the additional filters. 
+```{r Create New DTM}
 # Create a new DTM with all previous filters.
 dtm<-DocumentTermMatrix(complains, list(dictionary=freqTerms))
 inspect(dtm)
 dtm<-removeSparseTerms(dtm, 0.95)
 inspect(dtm)
 ```
-We have reduced the number of terms to 323. To carry on with the exploratory analysis, we can perform k-means clustering as we know that there are 4 different product types. 
-```{r Exploratory Analysis - Clustering}
-# Get Product ID
-product<-as.factor(df$Product)
-dtm_mat<-as.matrix(dtm)
-
-# Calculate K-means Clustering
-set.seed(123)
-kClust<-kmeans(dtm_mat, centers=4, nstart=4)
-table(kClust$cluster, product)
-```
-From the clustering with 4 different centers, it appears that the 4 clusters are not distinctive, with the exception of cluster 3 which seems predominantly for `Credit card or prepaid card` - ML methods should perform better. Let's also calculate the Pearson correlation coefficients between all the terms using the `cor()` function and plot with the `corrplot` package. 
-```{r Correlation, fig.height=10, fig.width=10}
-corr<-cor(dtm_mat)
-
-library(corrplot)
-corrplot(corr, tl.cex=0.7, method="circle", type="upper", order="hclust", tl.srt=90)
-```
-From the diagram, we can see that some terms are moderately correlated with each other such as "credit" and "card" (~0.47) or "received" and "letter" (~0.43). Let's proceed with building a ML model to predict the product category.
+We have reduced the number of terms to 308.
 
 # Building a ML model for predicting product category
 
 ## Create Train and Test Sets
 As we have briefly processed the "train" data set as dtm previously, we would now need to split it into training (75%) and test (25%) sets. Let's start by creating the training data set. 
 ```{r Create Train Data Set}
-# Convert Product to a factor 
+# Convert Product to a factor
 df_clean<-df_clean %>%
     mutate(Product=factor(Product))
 
 # Convert dtm_mat into a data frame and add the outcome Product column.
 dtm_train<-dtm_mat %>%
+    as.matrix() %>%
     as.data.frame() %>% 
     bind_cols(Product=df_clean$Product) %>% 
     select(Product, everything())
@@ -164,12 +149,13 @@ head(testing_dtm)
 count(testing_dtm, Product)
 ```
 ## Create cross validation folds.
-Before moving on, we can also create cross validation folds with `rsample`. We will carry out a 4-fold cross-validation.
+Before moving on, we can also create cross validation folds with `rsample`. We will carry out a 10-fold cross-validation.
 ```{r Cross-Validation}
-vfold_dtm<-vfold_cv(data=training_dtm, v=4)
+vfold_dtm<-vfold_cv(data=training_dtm, v=10)
 vfold_dtm
 pull(vfold_dtm, splits)
 
+# Check first fold
 first_fold<-vfold_dtm$splits[[1]]
 # Training set of this fold
 head(as.data.frame(first_fold, data="analysis")) 
@@ -177,7 +163,7 @@ head(as.data.frame(first_fold, data="analysis"))
 head(as.data.frame(first_fold, data="assessment")) 
 ```
 ## Creating ML workflow
-We can now create a recipe, model, and workflow for the ML model. We will use a classification decision tree model as our variable is categorical and the rpart engine. 
+We can now create a recipe, model, and workflow for the ML model. We will use a classification decision tree model (`rpart` engine) as our variable is categorical. 
 ```{r Recipe, Model , Workflow}
 # Create a recipe
 dtm_recipe<-training_dtm %>%
@@ -233,23 +219,26 @@ Interestingly, the model accuracy stays the same.
 ## Tuning the model
 Now, lets try to improve the model by tuning a hyperparameter. 
 ```{r Tuning}
-set.seed(122)
 # Create tuned model
-dtm_model_tune<-decision_tree(min_n=tune()) %>%
+dtm_model_tune<-decision_tree(cost_complexity=tune(), tree_depth=tune()) %>%
     set_mode("classification") %>%
     set_engine("rpart")
-dtm_model_tune
+
+tree_grid<-grid_regular(cost_complexity(), tree_depth(), levels=3)
 
 # Create workflow
 dtm_workflow_tune<-workflow() %>%
     add_recipe(dtm_recipe) %>%
     add_model(dtm_model_tune)
 
-# Fit
-model_resample_fit<-tune_grid(dtm_workflow_tune, resamples=vfold_dtm, grid=4)
+# Perform tuning
+set.seed(123)
+model_resample_fit<-tune_grid(dtm_workflow_tune, 
+                              resamples=vfold_dtm, 
+                              grid=tree_grid, 
+                              metrics=metric_set(accuracy, roc_auc))
 
 # Assess Performance
-collect_metrics(model_resample_fit)
 show_best(model_resample_fit, metric="accuracy")
 ```
 Seems like tuning doesn't make any difference to the model - the highest accuracy achieved is 84.1%. We can stop the model building here and just update `dtm_workflow_tune` with the values chosen by `select_best()`.
